@@ -197,6 +197,21 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
                     }
                 }
             }
+            "getConnectedProxyInfo" -> {
+                val activeConfig = AppConfigs.V2RAY_CONFIG
+                if (activeConfig == null || AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED) {
+                    result.success(null)
+                    return
+                }
+
+                result.success(
+                    mapOf(
+                        "host" to "127.0.0.1",
+                        "socksPort" to activeConfig.LOCAL_SOCKS5_PORT,
+                        "httpPort" to activeConfig.LOCAL_HTTP_PORT,
+                    )
+                )
+            }
             "getCoreVersion" -> {
                 // Returns the version of the underlying libxray.so
                 executor.submit {
