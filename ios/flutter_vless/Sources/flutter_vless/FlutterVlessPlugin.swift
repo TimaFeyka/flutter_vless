@@ -436,6 +436,7 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 let snapshot = String(decoding: response, as: UTF8.self)
                 if !snapshot.isEmpty {
                     pluginLog.info("Provider debug snapshot:\n\(snapshot, privacy: .public)")
+                    NSLog("FLUTTER_VLESS_PROVIDER_DEBUG_SNAPSHOT\n\(snapshot)")
                 }
             } catch {
                 pluginLog.error("Provider debug snapshot failed: \(error.localizedDescription, privacy: .public)")
@@ -462,6 +463,8 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             getServerDelay(call: call, result: result)
         case "getProviderDebugSnapshot":
             getProviderDebugSnapshot(result: result)
+        case "getProviderExternalIp":
+            getProviderExternalIp(result: result)
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -510,10 +513,29 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                     result("")
                     return
                 }
-                result(String(decoding: response, as: UTF8.self))
+                let snapshot = String(decoding: response, as: UTF8.self)
+                if !snapshot.isEmpty {
+                    NSLog("FLUTTER_VLESS_PROVIDER_DEBUG_SNAPSHOT\n\(snapshot)")
+                }
+                result(snapshot)
             } catch {
                 pluginLog.error("Provider debug snapshot request failed: \(error.localizedDescription, privacy: .public)")
                 result(FlutterError(code: "PROVIDER_DEBUG_FAILED", message: error.localizedDescription, details: nil))
+            }
+        }
+    }
+
+    private func getProviderExternalIp(result: @escaping FlutterResult) {
+        Task {
+            do {
+                guard let response = try await packetTunnelManager?.sendProviderMessage(data: "xray_external_ip".data(using: .utf8)!) else {
+                    result("")
+                    return
+                }
+                result(String(decoding: response, as: UTF8.self))
+            } catch {
+                pluginLog.error("Provider external IP request failed: \(error.localizedDescription, privacy: .public)")
+                result("")
             }
         }
     }

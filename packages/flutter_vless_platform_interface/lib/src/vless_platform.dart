@@ -82,4 +82,13 @@ abstract class VlessPlatform extends PlatformInterface {
       'getCoreVersion() has not been implemented.',
     );
   }
+
+  /// Returns a debug snapshot from the active Packet Tunnel provider.
+  ///
+  /// Platforms without a Packet Tunnel provider may return an empty string.
+  Future<String> getProviderDebugSnapshot() {
+    throw UnimplementedError(
+      'getProviderDebugSnapshot() has not been implemented.',
+    );
+  }
 }

@@ -106,4 +106,9 @@ class VlessMethodChannelAdapter extends VlessPlatform {
   Future<String> getCoreVersion() async {
     return await methodChannel.invokeMethod('getCoreVersion');
   }
+
+  @override
+  Future<String> getProviderDebugSnapshot() async {
+    return await methodChannel.invokeMethod('getProviderDebugSnapshot') ?? '';
+  }
 }

@@ -171,6 +171,14 @@ class FlutterVless {
     return await VlessPlatform.instance.getCoreVersion();
   }
 
+  /// Returns a debug snapshot from the active Packet Tunnel provider.
+  ///
+  /// This is mainly useful on Apple platforms where the extension process has
+  /// separate logs from the Flutter app.
+  Future<String> getProviderDebugSnapshot() async {
+    return await VlessPlatform.instance.getProviderDebugSnapshot();
+  }
+
   /// Parse a share link, raw Xray JSON config, or subscription payload.
   ///
   /// Supports vmess://, vless://, trojan://, ss://, socks://, hysteria2://,

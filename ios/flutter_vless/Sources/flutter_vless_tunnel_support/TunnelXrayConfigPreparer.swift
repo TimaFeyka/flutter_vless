@@ -88,6 +88,17 @@ public enum TunnelXrayConfigPreparer {
                     guard protocolType == "socks" || protocolType == "http" else {
                         continue
                     }
+                    if protocolType == "socks" {
+                        var settings = inbounds[index]["settings"] as? [String: Any] ?? [:]
+                        if (settings["udp"] as? Bool) != true {
+                            settings["udp"] = true
+                            messages.append("Enabled UDP on local Xray SOCKS inbound for HEV")
+                        }
+                        if settings["auth"] == nil {
+                            settings["auth"] = "noauth"
+                        }
+                        inbounds[index]["settings"] = settings
+                    }
                     inbounds[index]["sniffing"] = [
                         "enabled": true,
                         "destOverride": ["http", "tls", "quic"],
@@ -131,11 +142,9 @@ public enum TunnelXrayConfigPreparer {
                 configJSON["outbounds"] = outbounds
             }
 
-            if proxyUsesXhttp {
-                let blackholeTag = blackholeOutboundTag(configJSON: configJSON)
-                if ensureUdp443BlockRule(configJSON: &configJSON, outboundTag: blackholeTag) {
-                    messages.append("Added XHTTP UDP/443 block rule to force browser TCP fallback")
-                }
+            let blackholeTag = blackholeOutboundTag(configJSON: configJSON)
+            if ensureUdp443BlockRule(configJSON: &configJSON, outboundTag: blackholeTag) {
+                messages.append("Added UDP/443 block rule to force browser TCP fallback")
             }
 
             let data = try JSONSerialization.data(withJSONObject: configJSON, options: [])
