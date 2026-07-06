@@ -8,7 +8,7 @@
 	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.dev.tfox.flutterXray</string>
+		<string>group.com.mtadeveloper.vpn</string>
 	</array>
 </dict>
 </plist>

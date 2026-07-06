@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CLIENT_ID</key>
+	<string>701907432492-88v5qcaipqinsl4rsidt9idm9lpf5688.apps.googleusercontent.com</string>
+	<key>REVERSED_CLIENT_ID</key>
+	<string>com.googleusercontent.apps.701907432492-88v5qcaipqinsl4rsidt9idm9lpf5688</string>
+	<key>ANDROID_CLIENT_ID</key>
+	<string>701907432492-l8k5nqcsohc9npsj08tl5a04g0hq58ur.apps.googleusercontent.com</string>
+	<key>API_KEY</key>
+	<string>AIzaSyCHC2UlUzUZxq3KCUJBT4DpJj4J7b6UjZA</string>
+	<key>GCM_SENDER_ID</key>
+	<string>701907432492</string>
+	<key>PLIST_VERSION</key>
+	<string>1</string>
+	<key>BUNDLE_ID</key>
+	<string>com.mtadeveloper.vpn</string>
+	<key>PROJECT_ID</key>
+	<string>my-vpn-9a5e9</string>
+	<key>STORAGE_BUCKET</key>
+	<string>my-vpn-9a5e9.firebasestorage.app</string>
+	<key>IS_ADS_ENABLED</key>
+	<false></false>
+	<key>IS_ANALYTICS_ENABLED</key>
+	<false></false>
+	<key>IS_APPINVITE_ENABLED</key>
+	<true></true>
+	<key>IS_GCM_ENABLED</key>
+	<true></true>
+	<key>IS_SIGNIN_ENABLED</key>
+	<true></true>
+	<key>GOOGLE_APP_ID</key>
+	<string>1:701907432492:ios:9d064e27eec14a53334d89</string>
+</dict>
+</plist>

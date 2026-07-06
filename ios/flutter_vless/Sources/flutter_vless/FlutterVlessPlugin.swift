@@ -801,6 +801,7 @@ final class PacketTunnelManager: ObservableObject {
         guard let providerBundleIdentifier = providerBundleIdentifier else {
             throw NSError(domain: "VPN", code: 1, userInfo: [NSLocalizedDescriptionKey: "Provider bundle identifier is missing."])
         }
+        try await waitUntilTunnelLeavesDisconnecting(context: "saveToPreferences")
 
         do {
             let manager = self.manager ?? NETunnelProviderManager()
@@ -816,9 +817,9 @@ final class PacketTunnelManager: ObservableObject {
                     "proxyOnly": self.proxyOnly
                 ]
                 if #available(iOS 14.2, *) {
-                    configuration.includeAllNetworks = false
+                    configuration.includeAllNetworks = true
                     configuration.excludeLocalNetworks = false
-                    configuration.enforceRoutes = false
+                    configuration.enforceRoutes = true
                 }
                 return configuration
             }()
@@ -847,6 +848,7 @@ final class PacketTunnelManager: ObservableObject {
     }
 
     func start() async throws {
+        try await waitUntilTunnelLeavesDisconnecting(context: "startVPNTunnel")
         guard let manager = manager else {
             throw NSError(domain: "VPN", code: 1, userInfo: [NSLocalizedDescriptionKey: "Manager not found"])
         }
@@ -899,6 +901,13 @@ final class PacketTunnelManager: ObservableObject {
 
     func testSaveAndLoadProfile() async -> Bool{
         do {
+            try await waitUntilTunnelLeavesDisconnecting(context: "requestPermission")
+            if manager != nil {
+                self.manager = await loadTunnelProviderManager()
+                pluginLog.info("testSaveAndLoadProfile succeeded with existing manager")
+                return true
+            }
+
             try await saveToPreferences()
 
             // Now reload the manager after saving
@@ -935,6 +944,39 @@ final class PacketTunnelManager: ObservableObject {
         } catch {
             pluginLog.error("Error loading tunnel provider manager: \(error.localizedDescription, privacy: .public)")
             return nil
+        }
+    }
+
+    private func waitUntilTunnelLeavesDisconnecting(
+        context: String,
+        timeoutSeconds: TimeInterval = 12
+    ) async throws {
+        guard let manager else {
+            return
+        }
+
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        var attempt = 0
+        while manager.connection.status == .disconnecting && Date() < deadline {
+            if attempt == 0 {
+                pluginLog.info("Waiting for VPN to leave disconnecting before \(context, privacy: .public)")
+            }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await manager.loadFromPreferences()
+            attempt += 1
+        }
+
+        guard manager.connection.status != .disconnecting else {
+            pluginLog.error("VPN is still disconnecting before \(context, privacy: .public) after \(timeoutSeconds, privacy: .public)s")
+            throw NSError(
+                domain: "VPN",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "VPN is still disconnecting. Try again in a few seconds."]
+            )
+        }
+
+        if attempt > 0 {
+            pluginLog.info("VPN left disconnecting before \(context, privacy: .public) status=\(manager.connection.status.rawValue, privacy: .public)")
         }
     }
 }
