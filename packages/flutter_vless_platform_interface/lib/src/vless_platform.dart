@@ -91,4 +91,24 @@ abstract class VlessPlatform extends PlatformInterface {
       'getProviderDebugSnapshot() has not been implemented.',
     );
   }
+
+  /// Returns the Packet Tunnel provider debug log files when available.
+  ///
+  /// Unlike [getProviderDebugSnapshot], Apple implementations may read this
+  /// directly from the App Group container even when the provider session is no
+  /// longer connected.
+  Future<String> getProviderDebugLogFile() {
+    throw UnimplementedError(
+      'getProviderDebugLogFile() has not been implemented.',
+    );
+  }
+
+  /// Returns the external IP observed from inside the active Packet Tunnel.
+  ///
+  /// Platforms without a Packet Tunnel provider may return an empty string.
+  Future<String> getProviderExternalIp() {
+    throw UnimplementedError(
+      'getProviderExternalIp() has not been implemented.',
+    );
+  }
 }

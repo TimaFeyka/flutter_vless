@@ -82,12 +82,22 @@ public enum TunnelXrayConfigPreparer {
                 configJSON["routing"] = ["domainStrategy": "AsIs"]
             }
 
+            var localInboundTags: [String] = []
             if var inbounds = configJSON["inbounds"] as? [[String: Any]] {
                 for index in inbounds.indices {
                     let protocolType = inbounds[index]["protocol"] as? String
                     guard protocolType == "socks" || protocolType == "http" else {
                         continue
                     }
+                    if let tag = inbounds[index]["tag"] as? String, !tag.isEmpty {
+                        localInboundTags.append(tag)
+                    } else {
+                        let tag = uniqueInboundTag(inbounds: inbounds, preferred: protocolType ?? "inbound")
+                        inbounds[index]["tag"] = tag
+                        localInboundTags.append(tag)
+                        messages.append("Tagged local \(protocolType ?? "proxy") inbound as \(tag) for packet tunnel routing")
+                    }
+                    inbounds[index]["listen"] = "127.0.0.1"
                     if protocolType == "socks" {
                         var settings = inbounds[index]["settings"] as? [String: Any] ?? [:]
                         if (settings["udp"] as? Bool) != true {
@@ -102,13 +112,14 @@ public enum TunnelXrayConfigPreparer {
                     inbounds[index]["sniffing"] = [
                         "enabled": true,
                         "destOverride": ["http", "tls", "quic"],
-                        "routeOnly": false
+                        "routeOnly": true
                     ]
                 }
                 configJSON["inbounds"] = inbounds
             }
 
             var proxyUsesXhttp = false
+            var proxyOutboundTag: String?
             if var outbounds = configJSON["outbounds"] as? [[String: Any]] {
                 for index in outbounds.indices {
                     let tag = outbounds[index]["tag"] as? String
@@ -116,6 +127,16 @@ public enum TunnelXrayConfigPreparer {
                     guard tag == "proxy" || protocolType != "freedom" && protocolType != "blackhole" else {
                         continue
                     }
+                    let candidateTag: String
+                    if let tag, !tag.isEmpty {
+                        candidateTag = tag
+                    } else {
+                        candidateTag = uniqueOutboundTag(outbounds: outbounds, preferred: "proxy")
+                        outbounds[index]["tag"] = candidateTag
+                        messages.append("Tagged proxy outbound as \(candidateTag) for packet tunnel routing")
+                    }
+                    proxyOutboundTag = candidateTag
+
                     var streamSettings = outbounds[index]["streamSettings"] as? [String: Any] ?? [:]
                     normalizeStreamSettingsAliases(streamSettings: &streamSettings, messages: &messages)
                     let network = (streamSettings["network"] as? String ?? "?").lowercased()
@@ -140,6 +161,15 @@ public enum TunnelXrayConfigPreparer {
                     break
                 }
                 configJSON["outbounds"] = outbounds
+            }
+
+            if let proxyOutboundTag,
+               ensureForceProxyRule(
+                configJSON: &configJSON,
+                inboundTags: localInboundTags,
+                outboundTag: proxyOutboundTag
+               ) {
+                messages.append("Forced local tunnel inbound(s) \(localInboundTags.joined(separator: ",")) to proxy outbound \(proxyOutboundTag)")
             }
 
             let blackholeTag = blackholeOutboundTag(configJSON: configJSON)
@@ -200,6 +230,30 @@ public enum TunnelXrayConfigPreparer {
         return nil
     }
 
+    private static func uniqueInboundTag(inbounds: [[String: Any]], preferred: String) -> String {
+        let usedTags = Set(inbounds.compactMap { $0["tag"] as? String })
+        guard usedTags.contains(preferred) else {
+            return preferred
+        }
+        var suffix = 1
+        while usedTags.contains("\(preferred)-\(suffix)") {
+            suffix += 1
+        }
+        return "\(preferred)-\(suffix)"
+    }
+
+    private static func uniqueOutboundTag(outbounds: [[String: Any]], preferred: String) -> String {
+        let usedTags = Set(outbounds.compactMap { $0["tag"] as? String })
+        guard usedTags.contains(preferred) else {
+            return preferred
+        }
+        var suffix = 1
+        while usedTags.contains("\(preferred)-\(suffix)") {
+            suffix += 1
+        }
+        return "\(preferred)-\(suffix)"
+    }
+
     private static func blackholeOutboundTag(configJSON: [String: Any]) -> String {
         guard let outbounds = configJSON["outbounds"] as? [[String: Any]] else {
             return "blackhole"
@@ -230,6 +284,71 @@ public enum TunnelXrayConfigPreparer {
         routing["rules"] = rules
         configJSON["routing"] = routing
         return true
+    }
+
+    private static func ensureForceProxyRule(
+        configJSON: inout [String: Any],
+        inboundTags: [String],
+        outboundTag: String
+    ) -> Bool {
+        guard !inboundTags.isEmpty else {
+            return false
+        }
+        var routing = configJSON["routing"] as? [String: Any] ?? [:]
+        var rules = routing["rules"] as? [[String: Any]] ?? []
+        let sortedInboundTags = inboundTags.sorted()
+        let alreadyExists = rules.contains { rule in
+            (rule["type"] as? String) == "field" &&
+            (rule["outboundTag"] as? String) == outboundTag &&
+            ((rule["inboundTag"] as? [String]) ?? []).sorted() == sortedInboundTags
+        }
+        if alreadyExists {
+            return false
+        }
+        let insertionIndex = forceProxyRuleInsertionIndex(rules: rules)
+        rules.insert([
+            "type": "field",
+            "inboundTag": sortedInboundTags,
+            "outboundTag": outboundTag
+        ], at: insertionIndex)
+        routing["rules"] = rules
+        configJSON["routing"] = routing
+        return true
+    }
+
+    private static func forceProxyRuleInsertionIndex(rules: [[String: Any]]) -> Int {
+        for (index, rule) in rules.enumerated() {
+            if !hasSpecificRoutingCondition(rule) {
+                return index
+            }
+        }
+        return rules.count
+    }
+
+    private static func hasSpecificRoutingCondition(_ rule: [String: Any]) -> Bool {
+        let specificKeys = [
+            "domain",
+            "ip",
+            "port",
+            "network",
+            "protocol",
+            "source",
+            "sourcePort",
+            "user",
+            "attrs"
+        ]
+        return specificKeys.contains { key in
+            guard let value = rule[key] else {
+                return false
+            }
+            if let list = value as? [Any] {
+                return !list.isEmpty
+            }
+            if let string = value as? String {
+                return !string.isEmpty
+            }
+            return true
+        }
     }
 
     private static func replaceProxyServerDomainWithIPv4(

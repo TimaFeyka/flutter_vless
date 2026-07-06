@@ -111,4 +111,14 @@ class VlessMethodChannelAdapter extends VlessPlatform {
   Future<String> getProviderDebugSnapshot() async {
     return await methodChannel.invokeMethod('getProviderDebugSnapshot') ?? '';
   }
+
+  @override
+  Future<String> getProviderDebugLogFile() async {
+    return await methodChannel.invokeMethod('getProviderDebugLogFile') ?? '';
+  }
+
+  @override
+  Future<String> getProviderExternalIp() async {
+    return await methodChannel.invokeMethod('getProviderExternalIp') ?? '';
+  }
 }

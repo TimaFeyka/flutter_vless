@@ -88,10 +88,12 @@ final class TunnelXrayConfigPreparerTests: XCTestCase {
         XCTAssertEqual(rules.first?["network"] as? String, "udp")
         XCTAssertEqual(String(describing: rules.first?["port"] ?? ""), "443")
         XCTAssertEqual(rules.first?["outboundTag"] as? String, "block")
+        XCTAssertEqual(rules.dropFirst().first?["inboundTag"] as? [String], ["socks-in"])
+        XCTAssertEqual(rules.dropFirst().first?["outboundTag"] as? String, "proxy")
 
         let sniffing = try XCTUnwrap(inbounds[0]["sniffing"] as? [String: Any])
         XCTAssertEqual(sniffing["enabled"] as? Bool, true)
-        XCTAssertEqual(sniffing["routeOnly"] as? Bool, false)
+        XCTAssertEqual(sniffing["routeOnly"] as? Bool, true)
         XCTAssertEqual(sniffing["destOverride"] as? [String], ["http", "tls", "quic"])
     }
 
@@ -190,7 +192,12 @@ final class TunnelXrayConfigPreparerTests: XCTestCase {
         let routing = try XCTUnwrap(output["routing"] as? [String: Any])
         let rules = try XCTUnwrap(routing["rules"] as? [[String: Any]])
 
-        XCTAssertEqual(rules.count, 1)
+        XCTAssertEqual(rules.count, 2)
+        XCTAssertEqual(rules[0]["network"] as? String, "udp")
+        XCTAssertEqual(String(describing: rules[0]["port"] ?? ""), "443")
+        XCTAssertEqual(rules[0]["outboundTag"] as? String, "blackhole")
+        XCTAssertEqual(rules[1]["inboundTag"] as? [String], ["socks"])
+        XCTAssertEqual(rules[1]["outboundTag"] as? String, "proxy")
         XCTAssertFalse(result.logMessages.contains("Added XHTTP UDP/443 block rule to force browser TCP fallback"))
     }
 

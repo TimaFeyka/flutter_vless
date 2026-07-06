@@ -337,6 +337,7 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
             Task{
                 do{
+                    _ = await self.queryProviderRuntimeReady()
                     let response =  try await self.packetTunnelManager?.sendProviderMessage(data: "xray_traffic".data(using: .utf8)!)
                     if response != nil{
                         let traffic = String(decoding: response!, as: UTF8.self)
@@ -417,6 +418,22 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         eventSink?(payload)
     }
 
+    private func queryProviderRuntimeReady() async -> Bool {
+        do {
+            guard let response = try await packetTunnelManager?.sendProviderMessage(data: "xray_ready".data(using: .utf8)!) else {
+                pluginLog.info("Provider runtime ready check: no response")
+                return false
+            }
+            let value = String(decoding: response, as: UTF8.self)
+            let ready = value.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+            pluginLog.info("Provider runtime ready check: \(ready, privacy: .public)")
+            return ready
+        } catch {
+            pluginLog.error("Provider runtime ready check failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
     /// Sends a lightweight debug request to the NetworkExtension provider.
     ///
     /// The snapshot is intentionally verbose enough to compare transports:
@@ -463,6 +480,8 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             getServerDelay(call: call, result: result)
         case "getProviderDebugSnapshot":
             getProviderDebugSnapshot(result: result)
+        case "getProviderDebugLogFile":
+            getProviderDebugLogFile(result: result)
         case "getProviderExternalIp":
             getProviderExternalIp(result: result)
         default:
@@ -523,6 +542,39 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 result(FlutterError(code: "PROVIDER_DEBUG_FAILED", message: error.localizedDescription, details: nil))
             }
         }
+    }
+
+    private func getProviderDebugLogFile(result: @escaping FlutterResult) {
+        guard let groupIdentifier = packetTunnelManager?.groupIdentifier,
+              let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupIdentifier) else {
+            result("")
+            return
+        }
+        let logDirectoryURL = containerURL
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("XrayTunnel", isDirectory: true)
+        let xrayLogURL = logDirectoryURL.appendingPathComponent("xray-tunnel-debug.log")
+        let xrayAccessLogURL = logDirectoryURL.appendingPathComponent("xray-access.log")
+        let xrayErrorLogURL = logDirectoryURL.appendingPathComponent("xray-error.log")
+        let hevLogURL = logDirectoryURL.appendingPathComponent("hev-socks5-tunnel.log")
+        var parts: [String] = []
+        parts.append("APP_GROUP_LOG_DIR=\(logDirectoryURL.path)")
+        parts.append(readDebugFileSection(title: "xray-tunnel-debug.log", url: xrayLogURL))
+        parts.append(readDebugFileSection(title: "xray-access.log", url: xrayAccessLogURL))
+        parts.append(readDebugFileSection(title: "xray-error.log", url: xrayErrorLogURL))
+        parts.append(readDebugFileSection(title: "hev-socks5-tunnel.log", url: hevLogURL))
+        result(parts.joined(separator: "\n"))
+    }
+
+    private func readDebugFileSection(title: String, url: URL, maxLines: Int = 800) -> String {
+        guard let data = try? Data(contentsOf: url),
+              let content = String(data: data, encoding: .utf8),
+              !content.isEmpty else {
+            return "--- \(title) unavailable path=\(url.path) ---"
+        }
+        let tail = content.split(separator: "\n").suffix(maxLines).joined(separator: "\n")
+        return "--- \(title) path=\(url.path) ---\n\(tail)"
     }
 
     private func getProviderExternalIp(result: @escaping FlutterResult) {
@@ -631,7 +683,9 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         self.packetTunnelManager?.statusDidChange = { [weak self] status in
             guard let self else { return }
             switch status {
-            case .connecting, .connected, .reasserting, .disconnecting:
+            case .connecting:
+                self.startTimer(reason: "vpn-status-\(status?.rawValue ?? -1)")
+            case .connected, .reasserting, .disconnecting:
                 self.startTimer(reason: "vpn-status-\(status?.rawValue ?? -1)")
             case .disconnected, .invalid:
                 if !self.proxyOnlyRunner.isRunning {
@@ -762,14 +816,19 @@ final class PacketTunnelManager: ObservableObject {
                     "proxyOnly": self.proxyOnly
                 ]
                 if #available(iOS 14.2, *) {
-                    configuration.excludeLocalNetworks = true
-                } else {
-                    // Fallback on earlier versions
+                    configuration.includeAllNetworks = false
+                    configuration.excludeLocalNetworks = false
+                    configuration.enforceRoutes = false
                 }
                 return configuration
             }()
             manager.isEnabled = true
-            pluginLog.info("Saving VPN preferences provider=\(providerBundleIdentifier, privacy: .public) configBytes=\(self.xrayConfig.count, privacy: .public) bypassCount=\(self.bypassSubnets.count, privacy: .public) proxyOnly=\(self.proxyOnly, privacy: .public)")
+            if #available(iOS 14.2, *),
+               let configuration = manager.protocolConfiguration as? NETunnelProviderProtocol {
+                pluginLog.info("Saving VPN preferences provider=\(providerBundleIdentifier, privacy: .public) configBytes=\(self.xrayConfig.count, privacy: .public) bypassCount=\(self.bypassSubnets.count, privacy: .public) proxyOnly=\(self.proxyOnly, privacy: .public) includeAllNetworks=\(configuration.includeAllNetworks, privacy: .public) excludeLocalNetworks=\(configuration.excludeLocalNetworks, privacy: .public) enforceRoutes=\(configuration.enforceRoutes, privacy: .public)")
+            } else {
+                pluginLog.info("Saving VPN preferences provider=\(providerBundleIdentifier, privacy: .public) configBytes=\(self.xrayConfig.count, privacy: .public) bypassCount=\(self.bypassSubnets.count, privacy: .public) proxyOnly=\(self.proxyOnly, privacy: .public)")
+            }
             try await manager.saveToPreferences()
             try await manager.loadFromPreferences()
             pluginLog.info("VPN preferences saved and reloaded")

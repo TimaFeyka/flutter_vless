@@ -179,6 +179,22 @@ class FlutterVless {
     return await VlessPlatform.instance.getProviderDebugSnapshot();
   }
 
+  /// Returns the Packet Tunnel provider log files from the shared App Group.
+  ///
+  /// On iOS this can still return useful data when `sendProviderMessage` cannot
+  /// reach the extension because the tunnel is disconnected.
+  Future<String> getProviderDebugLogFile() async {
+    return await VlessPlatform.instance.getProviderDebugLogFile();
+  }
+
+  /// Returns the external IP observed from inside the active Packet Tunnel.
+  ///
+  /// On iOS this uses the provider process and the active Xray/VLESS runtime,
+  /// so it is a stronger health signal than probing from the containing app.
+  Future<String> getProviderExternalIp() async {
+    return await VlessPlatform.instance.getProviderExternalIp();
+  }
+
   /// Parse a share link, raw Xray JSON config, or subscription payload.
   ///
   /// Supports vmess://, vless://, trojan://, ss://, socks://, hysteria2://,
