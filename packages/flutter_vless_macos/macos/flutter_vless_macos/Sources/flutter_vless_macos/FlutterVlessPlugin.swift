@@ -1607,6 +1607,12 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                         self?.logSystemNetworkSnapshot(reason: "vpn-connected-delayed", force: true)
                         self?.logAppNetworkProbe(reason: "vpn-connected-delayed", force: true)
                     }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                        self?.logProviderDebugSnapshot()
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                        self?.logProviderDebugSnapshot()
+                    }
                 }
             case .disconnected, .invalid:
                 self.didScheduleConnectedDiagnostics = false

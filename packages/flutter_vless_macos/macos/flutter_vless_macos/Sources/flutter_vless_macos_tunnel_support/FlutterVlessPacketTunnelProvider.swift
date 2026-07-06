@@ -523,17 +523,19 @@ open class FlutterVlessPacketTunnelProvider: NEPacketTunnelProvider {
         socks5:
           port: \(port)
           address: 127.0.0.1
-          udp: 'udp'
+          udp: 'tcp'
         misc:
-          task-stack-size: 20480
+          task-stack-size: 24576
           tcp-buffer-size: \(hevTCPBufferSize)
+          max-session-count: 1200
           connect-timeout: 5000
-          read-write-timeout: 60000
+          tcp-read-write-timeout: 60000
+          udp-read-write-timeout: 60000
           log-file: \(logURL.path)
           log-level: debug
           limit-nofile: 65535
         """
-        rememberTunnelLog("HEV config summary: tunnel.mtu=\(tunnelMTU), socks5=127.0.0.1:\(port), udp=udp, tcpBuffer=\(hevTCPBufferSize), timeoutMs=5000/60000")
+        rememberTunnelLog("HEV config summary: tunnel.mtu=\(tunnelMTU), socks5=127.0.0.1:\(port), udp=tcp, tcpBuffer=\(hevTCPBufferSize), maxSessions=1200, timeoutMs=5000/60000")
         if let tunnelFileDescriptor {
             rememberTunnelLog("Starting HEV socks5 tunnel on 127.0.0.1:\(port), fd=\(tunnelFileDescriptor), mtu=\(tunnelMTU), tcpBuffer=\(hevTCPBufferSize), log=\(logURL.path)")
             tunnelLog.info("Starting HEV socks5 tunnel on 127.0.0.1:\(port, privacy: .public), fd \(tunnelFileDescriptor, privacy: .public), mtu \(tunnelMTU, privacy: .public), tcpBuffer \(hevTCPBufferSize, privacy: .public)")

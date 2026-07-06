@@ -269,6 +269,7 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     private var downloadSpeed: Int = 0
     private var lastTrafficLogDate: Date = .distantPast
     private var lastProviderDebugLogDate: Date = .distantPast
+    private var didScheduleConnectedDiagnostics = false
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(name: "flutter_vless", binaryMessenger: registrar.messenger())
@@ -380,6 +381,7 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         self.totalUpload = 0
         self.totalDownload = 0
         self.lastProviderDebugLogDate = .distantPast
+        self.didScheduleConnectedDiagnostics = false
     }
 
     private func currentDurationSeconds() -> Int {
@@ -687,7 +689,17 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 self.startTimer(reason: "vpn-status-\(status?.rawValue ?? -1)")
             case .connected, .reasserting, .disconnecting:
                 self.startTimer(reason: "vpn-status-\(status?.rawValue ?? -1)")
+                if status == .connected, !self.didScheduleConnectedDiagnostics {
+                    self.didScheduleConnectedDiagnostics = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                        self?.logProviderDebugSnapshot()
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                        self?.logProviderDebugSnapshot()
+                    }
+                }
             case .disconnected, .invalid:
+                self.didScheduleConnectedDiagnostics = false
                 if !self.proxyOnlyRunner.isRunning {
                     self.stopTimer(reason: "vpn-status-\(status?.rawValue ?? -1)")
                 }

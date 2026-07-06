@@ -102,7 +102,7 @@ public enum TunnelXrayConfigPreparer {
                         var settings = inbounds[index]["settings"] as? [String: Any] ?? [:]
                         if (settings["udp"] as? Bool) != true {
                             settings["udp"] = true
-                            messages.append("Enabled UDP on local Xray SOCKS inbound for HEV")
+                            messages.append("Enabled local SOCKS UDP ASSOC for HEV; UDP/443 remains blackholed")
                         }
                         if settings["auth"] == nil {
                             settings["auth"] = "noauth"
@@ -172,9 +172,9 @@ public enum TunnelXrayConfigPreparer {
                 messages.append("Forced local tunnel inbound(s) \(localInboundTags.joined(separator: ",")) to proxy outbound \(proxyOutboundTag)")
             }
 
-            let blackholeTag = blackholeOutboundTag(configJSON: configJSON)
+            let blackholeTag = ensureBlackholeOutbound(configJSON: &configJSON)
             if ensureUdp443BlockRule(configJSON: &configJSON, outboundTag: blackholeTag) {
-                messages.append("Added UDP/443 block rule to force browser TCP fallback")
+                messages.append("Added UDP/443 block rule to force browser QUIC fallback while allowing DNS")
             }
 
             let data = try JSONSerialization.data(withJSONObject: configJSON, options: [])
@@ -254,18 +254,34 @@ public enum TunnelXrayConfigPreparer {
         return "\(preferred)-\(suffix)"
     }
 
-    private static func blackholeOutboundTag(configJSON: [String: Any]) -> String {
-        guard let outbounds = configJSON["outbounds"] as? [[String: Any]] else {
-            return "blackhole"
-        }
-        return outbounds.first(where: { outbound in
+    private static func ensureBlackholeOutbound(configJSON: inout [String: Any]) -> String {
+        var outbounds = configJSON["outbounds"] as? [[String: Any]] ?? []
+        if let tag = outbounds.first(where: { outbound in
             (outbound["protocol"] as? String) == "blackhole"
-        })?["tag"] as? String ?? "blackhole"
+        })?["tag"] as? String {
+            return tag
+        }
+
+        let tag = uniqueOutboundTag(outbounds: outbounds, preferred: "blackhole")
+        outbounds.append([
+            "tag": tag,
+            "protocol": "blackhole",
+            "settings": [:]
+        ])
+        configJSON["outbounds"] = outbounds
+        return tag
     }
 
     private static func ensureUdp443BlockRule(configJSON: inout [String: Any], outboundTag: String) -> Bool {
         var routing = configJSON["routing"] as? [String: Any] ?? [:]
         var rules = routing["rules"] as? [[String: Any]] ?? []
+        let originalCount = rules.count
+        rules.removeAll { rule in
+            (rule["type"] as? String) == "field" &&
+            (rule["network"] as? String) == "udp" &&
+            rule["port"] == nil &&
+            (rule["outboundTag"] as? String) == outboundTag
+        }
         let alreadyExists = rules.contains { rule in
             (rule["type"] as? String) == "field" &&
             (rule["network"] as? String) == "udp" &&
@@ -273,7 +289,9 @@ public enum TunnelXrayConfigPreparer {
             (rule["outboundTag"] as? String) == outboundTag
         }
         if alreadyExists {
-            return false
+            routing["rules"] = rules
+            configJSON["routing"] = routing
+            return rules.count != originalCount
         }
         rules.insert([
             "type": "field",

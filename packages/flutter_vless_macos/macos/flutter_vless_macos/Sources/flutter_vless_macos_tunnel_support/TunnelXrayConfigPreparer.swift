@@ -11,7 +11,7 @@ import Darwin
 // - Xray DNS must prefer IPv4 to match the provider's IPv4-only route model;
 // - local SOCKS/HTTP inbounds must listen on 127.0.0.1 for HEV;
 // - HEV traffic entering local inbounds must be forced to the proxy outbound;
-// - UDP/443 must be blackholed to force browser TCP fallback;
+// - UDP/443 must be blackholed to force browser QUIC fallback;
 // - the outbound server domain must be preserved for TLS/SNI/Reality/XHTTP
 //   semantics, even when we resolve an IPv4 for route exclusion.
 //
@@ -93,7 +93,7 @@ public enum TunnelXrayConfigPreparer {
     ///   did not route-exclude;
     /// - missing/remote-listening local inbounds broke HEV;
     /// - imported route rules sometimes sent HEV traffic to `freedom`;
-    /// - UDP/443 let browser QUIC hide a broken TCP fallback path.
+    /// - UDP/443 can hide an otherwise healthy TCP fallback path.
     public static func prepare(
         jsonData: Data,
         resolveIPv4: (String) -> String? = { _ in nil }
@@ -214,7 +214,7 @@ public enum TunnelXrayConfigPreparer {
 
             let blackholeTag = ensureBlackholeOutbound(configJSON: &configJSON)
             if ensureUdp443BlockRule(configJSON: &configJSON, outboundTag: blackholeTag) {
-                messages.append("Added UDP/443 block rule to force browser TCP fallback")
+                messages.append("Added UDP/443 block rule to force browser QUIC fallback while allowing DNS")
             }
 
             let data = try JSONSerialization.data(withJSONObject: configJSON, options: [])
@@ -368,7 +368,7 @@ public enum TunnelXrayConfigPreparer {
     /// - listen on loopback only, because HEV and the provider live locally;
     /// - keep or create stable tags so forced routing can reference them;
     /// - enable sniffing metadata, but with `routeOnly = true`;
-    /// - ensure SOCKS no-auth and UDP support for HEV;
+    /// - ensure SOCKS no-auth and allow local UDP ASSOC for HEV;
     /// - inject a SOCKS inbound if the config lacks one.
     ///
     /// `routeOnly = true` is intentional. It lets Xray use sniffed protocol
@@ -443,7 +443,7 @@ public enum TunnelXrayConfigPreparer {
             tunnelInboundTag = tag
             messages.append("Injected local SOCKS inbound for packet tunnel on port \(port)")
         } else if changedSocksInbound {
-            messages.append("Enabled UDP/noauth on local SOCKS inbound for packet tunnel")
+            messages.append("Enabled local SOCKS UDP ASSOC for HEV; UDP/443 remains blackholed")
         }
 
         configJSON["inbounds"] = inbounds
@@ -520,7 +520,7 @@ public enum TunnelXrayConfigPreparer {
     ///
     /// We prefer reusing an existing blackhole tag because imported configs may
     /// already have policy around it. If absent, a minimal blackhole outbound is
-    /// added solely for UDP/443 browser fallback control.
+    /// added solely for TCP-only packet tunnel control.
     private static func ensureBlackholeOutbound(configJSON: inout [String: Any]) -> String {
         var outbounds = configJSON["outbounds"] as? [[String: Any]] ?? []
         if let tag = outbounds.first(where: { outbound in
@@ -554,12 +554,20 @@ public enum TunnelXrayConfigPreparer {
     /// Blocks UDP/443 to force browser QUIC/HTTP3 traffic back to TCP.
     ///
     /// This is not a general statement that UDP is unsupported forever. It is a
-    /// deliberate guard for the currently validated path. QUIC can make browsers
-    /// appear stuck or bypass the TCP evidence we rely on. Until QUIC over this
-    /// Packet Tunnel is explicitly tested, UDP/443 must remain blocked.
+    /// deliberate guard for the currently validated path. DNS still needs UDP
+    /// through HEV/Xray, while QUIC can hide or bypass the TCP evidence we rely
+    /// on. Until QUIC over this Packet Tunnel is explicitly tested, UDP/443
+    /// remains blocked.
     private static func ensureUdp443BlockRule(configJSON: inout [String: Any], outboundTag: String) -> Bool {
         var routing = configJSON["routing"] as? [String: Any] ?? [:]
         var rules = routing["rules"] as? [[String: Any]] ?? []
+        let originalCount = rules.count
+        rules.removeAll { rule in
+            (rule["type"] as? String) == "field" &&
+            (rule["network"] as? String) == "udp" &&
+            rule["port"] == nil &&
+            (rule["outboundTag"] as? String) == outboundTag
+        }
         let alreadyExists = rules.contains { rule in
             (rule["type"] as? String) == "field" &&
             (rule["network"] as? String) == "udp" &&
@@ -567,7 +575,9 @@ public enum TunnelXrayConfigPreparer {
             (rule["outboundTag"] as? String) == outboundTag
         }
         if alreadyExists {
-            return false
+            routing["rules"] = rules
+            configJSON["routing"] = routing
+            return rules.count != originalCount
         }
         rules.insert([
             "type": "field",

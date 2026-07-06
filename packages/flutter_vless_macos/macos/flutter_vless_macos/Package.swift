@@ -12,7 +12,7 @@ let package = Package(
         .library(name: "flutter-vless-macos-tunnel-support", targets: ["flutter_vless_macos_tunnel_support"])
     ],
     dependencies: [
-        .package(url: "https://github.com/EbrahimTahernejad/Tun2SocksKit", exact: "4.11.0")
+        .package(path: "../../../../../../Tun2SocksKit")
     ],
     targets: [
         .target(
