@@ -13,7 +13,7 @@ let package = Package(
     ],
     dependencies: [
         .package(name: "FlutterFramework", path: "../FlutterFramework"),
-        .package(url: "https://github.com/EbrahimTahernejad/Tun2SocksKit", exact: "4.11.0")
+        .package(path: "../../../../Tun2SocksKit")
     ],
     targets: [
         .target(

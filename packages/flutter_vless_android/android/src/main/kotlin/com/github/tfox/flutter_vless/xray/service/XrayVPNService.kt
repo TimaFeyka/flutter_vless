@@ -125,10 +125,24 @@ class XrayVPNService : VpnService() {
                 builder.setMetered(false)
             }
             
-            try {
-                builder.addDisallowedApplication(packageName)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to exclude app from VPN", e)
+            if (config.ALLOWED_APPS.isNotEmpty()) {
+                config.ALLOWED_APPS.distinct().forEach { allowedPackage ->
+                    builder.addAllowedApplication(allowedPackage)
+                    Log.i(TAG, "Per-app VPN allowed package: $allowedPackage")
+                }
+            } else {
+                try {
+                    builder.addDisallowedApplication(packageName)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to exclude host app from VPN", e)
+                }
+                config.BLOCKED_APPS.distinct().forEach { blockedPackage ->
+                    try {
+                        builder.addDisallowedApplication(blockedPackage)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not exclude package $blockedPackage", e)
+                    }
+                }
             }
 
             // Add routes to exclude the server IP (to prevent routing loop)

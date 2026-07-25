@@ -39,8 +39,8 @@ import Darwin
 //    file and treat them as part of the runtime contract.
 // 2. Publish explicit Packet Tunnel DNS settings. macOS can otherwise create an
 //    unreachable default resolver while ordinary app sockets already prefer the
-//    utun route. Use public IPv4 DNS with `matchDomains = [""]` and keep DNS host
-//    exclusions disabled so the resolver follows the validated packet path.
+//    utun route. Point it at HEV's local mapdns address with `matchDomains = [""]`
+//    so DNS never depends on proxy-outbound UDP support.
 // 3. The remote proxy server needs a host route outside utun. Without it, Xray
 //    tries to reach the server through the same tunnel that depends on Xray
 //    reaching the server.
@@ -84,10 +84,11 @@ private let tunnelMTU = 1280
 /// examples commonly use the local tunnel address as the default-route gateway.
 private let tunnelRemoteAddress = "127.0.0.1"
 private let tunnelLocalAddress = "198.18.0.1"
+private let tunnelMappedDNSAddress = "198.18.0.2"
 private let tunnelDefaultGatewayAddress = "198.18.0.1"
 private let tunnelLocalSubnetMask = "255.255.255.0"
 private let tunnelLocalPrefixLength = 24
-private let tunnelDefaultDNSServers = ["1.1.1.1", "8.8.8.8"]
+private let tunnelDNSServers = [tunnelMappedDNSAddress]
 
 /// Upper bound for macOS to accept Packet Tunnel network settings.
 ///
@@ -326,11 +327,11 @@ open class FlutterVlessPacketTunnelProvider: NEPacketTunnelProvider {
         settings.ipv6Settings = nil
         rememberTunnelLog("IPv6 tunnel routing disabled; using IPv4-only packet tunnel")
         tunnelLog.info("IPv6 tunnel routing disabled; using IPv4-only packet tunnel")
-        let dnsSettings = NEDNSSettings(servers: tunnelDefaultDNSServers)
+        let dnsSettings = NEDNSSettings(servers: tunnelDNSServers)
         dnsSettings.matchDomains = [""]
         settings.dnsSettings = dnsSettings
-        rememberTunnelLog("Packet tunnel DNS servers=\(tunnelDefaultDNSServers.joined(separator: ",")) matchDomains=default appSnapshot=\(appDNSServers.isEmpty ? "none" : appDNSServers.joined(separator: ","))")
-        tunnelLog.info("Packet tunnel DNS servers=\(tunnelDefaultDNSServers.joined(separator: ","), privacy: .public) matchDomains=default")
+        rememberTunnelLog("Packet tunnel DNS servers=\(tunnelDNSServers.joined(separator: ",")) matchDomains=default appSnapshot=\(appDNSServers.isEmpty ? "none" : appDNSServers.joined(separator: ","))")
+        tunnelLog.info("Packet tunnel DNS servers=\(tunnelDNSServers.joined(separator: ","), privacy: .public) matchDomains=default")
         try await applyTunnelNetworkSettings(settings)
         try self.startXRay(xrayConfig: preparedXrayConfig)
         let tunnelFileDescriptor = packetFlowFileDescriptor()
@@ -524,16 +525,24 @@ open class FlutterVlessPacketTunnelProvider: NEPacketTunnelProvider {
           port: \(port)
           address: 127.0.0.1
           udp: 'udp'
+        mapdns:
+          address: \(tunnelMappedDNSAddress)
+          port: 53
+          network: 100.64.0.0
+          netmask: 255.192.0.0
+          cache-size: 10000
         misc:
-          task-stack-size: 20480
+          task-stack-size: 24576
           tcp-buffer-size: \(hevTCPBufferSize)
+          max-session-count: 1200
           connect-timeout: 5000
-          read-write-timeout: 60000
+          tcp-read-write-timeout: 60000
+          udp-read-write-timeout: 60000
           log-file: \(logURL.path)
           log-level: debug
           limit-nofile: 65535
         """
-        rememberTunnelLog("HEV config summary: tunnel.mtu=\(tunnelMTU), socks5=127.0.0.1:\(port), udp=udp, tcpBuffer=\(hevTCPBufferSize), timeoutMs=5000/60000")
+        rememberTunnelLog("HEV config summary: tunnel.mtu=\(tunnelMTU), socks5=127.0.0.1:\(port), udp=udp, mapdns=\(tunnelMappedDNSAddress), tcpBuffer=\(hevTCPBufferSize), maxSessions=1200, timeoutMs=5000/60000")
         if let tunnelFileDescriptor {
             rememberTunnelLog("Starting HEV socks5 tunnel on 127.0.0.1:\(port), fd=\(tunnelFileDescriptor), mtu=\(tunnelMTU), tcpBuffer=\(hevTCPBufferSize), log=\(logURL.path)")
             tunnelLog.info("Starting HEV socks5 tunnel on 127.0.0.1:\(port, privacy: .public), fd \(tunnelFileDescriptor, privacy: .public), mtu \(tunnelMTU, privacy: .public), tcpBuffer \(hevTCPBufferSize, privacy: .public)")

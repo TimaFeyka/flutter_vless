@@ -40,6 +40,7 @@ void main() {
       remark: 'Android XHTTP none',
       config: config,
       blockedApps: ['com.browser.blocked'],
+      allowedApps: ['com.android.chrome'],
       bypassSubnets: ['192.168.0.0/16'],
       proxyOnly: false,
       notificationDisconnectButtonName: 'DISCONNECT',
@@ -51,8 +52,11 @@ void main() {
       'remark': 'Android XHTTP none',
       'config': config,
       'blocked_apps': ['com.browser.blocked'],
+      'allowed_apps': ['com.android.chrome'],
       'bypass_subnets': ['192.168.0.0/16'],
       'proxy_only': false,
+      'per_app_proxy': false,
+      'apply_system_proxy': true,
       'notificationDisconnectButtonName': 'DISCONNECT',
     });
   });

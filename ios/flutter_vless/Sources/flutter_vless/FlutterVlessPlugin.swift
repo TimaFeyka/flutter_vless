@@ -269,6 +269,7 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     private var downloadSpeed: Int = 0
     private var lastTrafficLogDate: Date = .distantPast
     private var lastProviderDebugLogDate: Date = .distantPast
+    private var didScheduleConnectedDiagnostics = false
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(name: "flutter_vless", binaryMessenger: registrar.messenger())
@@ -380,6 +381,7 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         self.totalUpload = 0
         self.totalDownload = 0
         self.lastProviderDebugLogDate = .distantPast
+        self.didScheduleConnectedDiagnostics = false
     }
 
     private func currentDurationSeconds() -> Int {
@@ -489,12 +491,24 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         }
     }
 
-    private func stopVless(result: FlutterResult) {
+    private func stopVless(result: @escaping FlutterResult) {
         pluginLog.info("stopVless requested")
         proxyOnlyRunner.stop()
-        packetTunnelManager?.stop()
-        stopTimer(reason: "stopVless")
-        result(nil)
+        Task {
+            do {
+                try await packetTunnelManager?.stopAndWait()
+                pluginLog.info("stopVless confirmed native tunnel stopped")
+                stopTimer(reason: "stopVless-confirmed")
+                result(nil)
+            } catch {
+                pluginLog.error("stopVless failed: \(error.localizedDescription, privacy: .public)")
+                result(FlutterError(
+                    code: "VPN_STOP_ERROR",
+                    message: "Failed to stop VPN: \(error.localizedDescription)",
+                    details: nil
+                ))
+            }
+        }
     }
 
     private func getConnectedServerDelay(call: FlutterMethodCall, result: @escaping FlutterResult){
@@ -687,7 +701,17 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 self.startTimer(reason: "vpn-status-\(status?.rawValue ?? -1)")
             case .connected, .reasserting, .disconnecting:
                 self.startTimer(reason: "vpn-status-\(status?.rawValue ?? -1)")
+                if status == .connected, !self.didScheduleConnectedDiagnostics {
+                    self.didScheduleConnectedDiagnostics = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                        self?.logProviderDebugSnapshot()
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                        self?.logProviderDebugSnapshot()
+                    }
+                }
             case .disconnected, .invalid:
+                self.didScheduleConnectedDiagnostics = false
                 if !self.proxyOnlyRunner.isRunning {
                     self.stopTimer(reason: "vpn-status-\(status?.rawValue ?? -1)")
                 }
@@ -874,6 +898,34 @@ final class PacketTunnelManager: ObservableObject {
         }
         pluginLog.info("Calling stopVPNTunnel currentStatus=\(manager.connection.status.rawValue, privacy: .public)")
         manager.connection.stopVPNTunnel()
+    }
+
+    func stopAndWait(timeoutSeconds: TimeInterval = 7) async throws {
+        guard let manager else {
+            return
+        }
+
+        let initialStatus = manager.connection.status
+        guard initialStatus != .disconnected && initialStatus != .invalid else {
+            return
+        }
+
+        stop()
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while manager.connection.status != .disconnected &&
+                manager.connection.status != .invalid &&
+                Date() < deadline {
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+
+        guard manager.connection.status == .disconnected ||
+                manager.connection.status == .invalid else {
+            throw NSError(
+                domain: "VPN",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "VPN did not stop within \(timeoutSeconds) seconds."]
+            )
+        }
     }
 
     @discardableResult

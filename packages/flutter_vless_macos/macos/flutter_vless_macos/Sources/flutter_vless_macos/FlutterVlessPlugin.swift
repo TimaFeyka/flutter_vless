@@ -6,12 +6,17 @@ import FlutterMacOS
 import AppKit
 import NetworkExtension
 import Combine
+import Security
 
 import CXRay
 
 import os
 import CFNetwork
 import Darwin
+
+/// Process-local ownership marker. Proxy-only mode must never disable
+/// proxy settings that were configured by the user or another application.
+private var holeNetOwnsSystemProxy = false
 
 // MARK: - macOS App-Side Maintenance Notes
 //
@@ -20,7 +25,7 @@ import Darwin
 // NETunnelProviderManager persistence, status timers, and diagnostics that make
 // Packet Tunnel regressions visible from the app console.
 //
-// There are two distinct macOS networking modes:
+// There are three distinct macOS networking modes:
 //
 // - Proxy-only mode:
 //   Runs Xray in the app process and configures macOS system proxy settings
@@ -31,6 +36,11 @@ import Darwin
 //   Starts `XrayTunnel.appex`, installs utun routes, and lets the extension run
 //   Xray plus HEV tun2socks. This is the full VPN path and has its own DNS and
 //   route invariants documented in `doc/macos_packet_tunnel_architecture.md`.
+//
+// - Selected-application mode:
+//   Starts `XrayAppProxy.appex` as a transparent proxy. It compares each
+//   flow's code-signing identifier with the user-selected application and
+//   sends only matching TCP/UDP flows through Xray.
 //
 // Keep these modes separate. A passing proxy-only delay probe proves the config
 // can work through a local proxy; it does not prove the Network Extension,
@@ -603,6 +613,7 @@ private struct SystemProxyHelper {
             // Set bypass domains
             runNetworkSetup(["-setproxybypassdomains", service] + bypassDomains)
         }
+        holeNetOwnsSystemProxy = true
         pluginLog.info("System proxy set: HTTP=\(ports.httpPort ?? "none", privacy: .public) SOCKS=\(ports.socksPort ?? "none", privacy: .public) services=\(services.count, privacy: .public)")
     }
 
@@ -614,6 +625,7 @@ private struct SystemProxyHelper {
             runNetworkSetup(["-setsecurewebproxystate", service, "off"])
             runNetworkSetup(["-setsocksfirewallproxystate", service, "off"])
         }
+        holeNetOwnsSystemProxy = false
         pluginLog.info("System proxy cleared for \(services.count, privacy: .public) services")
     }
 
@@ -863,12 +875,13 @@ private final class ProxyOnlyRunner {
     private let logger = PluginXRayLogger()
     private(set) var isRunning = false
     private(set) var connectedDate: Date?
+    private(set) var appliesSystemProxy = false
     /// Tracks total bytes uploaded since last start.
     private(set) var totalUpload: Int64 = 0
     /// Tracks total bytes downloaded since last start.
     private(set) var totalDownload: Int64 = 0
 
-    func start(configData: Data, configString: String) throws {
+    func start(configData: Data, configString: String, applySystemProxy: Bool) throws {
         if isRunning {
             stop()
         }
@@ -881,22 +894,26 @@ private final class ProxyOnlyRunner {
             throw startError ?? NSError(domain: "FlutterVless", code: 10, userInfo: [NSLocalizedDescriptionKey: "Failed to start XRay proxy-only mode"])
         }
 
-        // IMPORTANT: pass preparedConfig (not original configString) so setSystemProxy
-        // can see the HTTP inbound that buildProxyOnlyConfigData added.
-        let preparedConfigString = String(data: preparedConfig, encoding: .utf8) ?? configString
-        SystemProxyHelper.setSystemProxy(config: preparedConfigString)
+        if applySystemProxy {
+            // Pass preparedConfig (not original configString) so setSystemProxy
+            // can see the HTTP inbound that buildProxyOnlyConfigData added.
+            let preparedConfigString = String(data: preparedConfig, encoding: .utf8) ?? configString
+            SystemProxyHelper.setSystemProxy(config: preparedConfigString)
+        }
 
         isRunning = true
+        appliesSystemProxy = applySystemProxy
         connectedDate = Date()
         totalUpload = 0
         totalDownload = 0
-        pluginLog.info("Started XRay proxy-only mode configBytes=\(preparedConfig.count, privacy: .public)")
+        pluginLog.info("Started XRay proxy-only mode configBytes=\(preparedConfig.count, privacy: .public) systemProxy=\(applySystemProxy, privacy: .public)")
     }
 
     func stop() {
-        // Always clear system proxy first — even if isRunning is somehow false,
-        // this guarantees we never leave a dead proxy configured.
-        SystemProxyHelper.clearSystemProxy()
+        if appliesSystemProxy {
+            SystemProxyHelper.clearSystemProxy()
+            appliesSystemProxy = false
+        }
         guard isRunning else {
             return
         }
@@ -915,7 +932,10 @@ private final class ProxyOnlyRunner {
     /// и системные настройки прокси не будут очищены, на Mac полностью пропадет интернет!
     /// (так как macOS будет пытаться отправлять весь трафик на выключенный локальный порт XRay).
     func forceCleanup() {
-        SystemProxyHelper.clearSystemProxy()
+        if appliesSystemProxy {
+            SystemProxyHelper.clearSystemProxy()
+            appliesSystemProxy = false
+        }
         XRayStop()
         isRunning = false
         connectedDate = nil
@@ -1108,11 +1128,21 @@ private final class ProxyOnlyRunner {
 /// the UI can show "connecting/connected" quickly, but the provider debug
 /// snapshot remains the source of truth for whether DNS, server routes, Xray,
 /// HEV, and real HTTPS all worked.
+private enum ActiveVlessMode: String {
+    case none
+    case proxyOnly
+    case selectedApplication
+    case packetTunnel
+    case stopping
+}
+
 public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
     private var packetTunnelManager: PacketTunnelManager? = nil
+    private var selectedAppProxyManager: SelectedAppProxyManager? = nil
     private let serverDelayRunner = ServerDelayRunner()
     private let proxyOnlyRunner = ProxyOnlyRunner()
+    private var activeMode: ActiveVlessMode = .none
 
     private var timer: Timer?
     private var eventSink: FlutterEventSink?
@@ -1157,7 +1187,9 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     /// Installs POSIX signal handlers so that even SIGTERM/SIGINT clears the proxy.
     private func installSignalHandlers() {
         let handler: @convention(c) (Int32) -> Void = { signal in
-            SystemProxyHelper.clearSystemProxy()
+            if holeNetOwnsSystemProxy {
+                SystemProxyHelper.clearSystemProxy()
+            }
             // Re-raise the signal with default handler
             Darwin.signal(signal, SIG_DFL)
             Darwin.raise(signal)
@@ -1218,7 +1250,7 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         logSystemNetworkSnapshot(reason: "timer-start:\(reason)")
         let timer = Timer(timeInterval: 1, repeats: true, block: { [weak self] _ in
             guard let self = self else { return }
-            if self.proxyOnlyRunner.isRunning {
+            if self.activeMode == .proxyOnly && self.proxyOnlyRunner.isRunning {
                 let elapsed = Date().timeIntervalSince(self.proxyOnlyRunner.connectedDate ?? Date())
                 let seconds = Int(elapsed)
                 // Query real traffic stats from XRay stats API
@@ -1232,6 +1264,42 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 self.uploadSpeed = Int(upSpeed)
                 self.downloadSpeed = Int(downSpeed)
                 self.emitStatus(duration: seconds, state: "CONNECTED", reason: "timer-proxy")
+                return
+            }
+
+            if self.activeMode == .selectedApplication,
+               let status = self.selectedAppProxyManager?.status,
+               status == .invalid || status == .disconnected {
+                pluginDebug("Selected-app proxy is no longer active while polling status=\(status.rawValue)")
+                self.stopTimer(reason: "app-proxy-status-\(status.rawValue)")
+                return
+            }
+            if self.activeMode == .selectedApplication,
+               self.selectedAppProxyManager?.isActive == true {
+                let elapsed = Date().timeIntervalSince(self.selectedAppProxyManager?.connectedDate ?? Date())
+                let seconds = Int(elapsed)
+                self.emitStatus(duration: seconds, state: self.currentWireState(), reason: "timer-app-proxy")
+                Task {
+                    do {
+                        guard let response = try await self.selectedAppProxyManager?.sendProviderMessage(
+                            data: "xray_traffic".data(using: .utf8)!
+                        ) else { return }
+                        let parts = String(decoding: response, as: UTF8.self).split(separator: ",")
+                        if parts.count >= 2, let up = Int(parts[0]), let down = Int(parts[1]) {
+                            self.uploadSpeed = max(0, up - self.totalUpload)
+                            self.downloadSpeed = max(0, down - self.totalDownload)
+                            self.totalUpload = up
+                            self.totalDownload = down
+                        }
+                    } catch {
+                        pluginDebug("Error polling selected-app traffic: \(error.localizedDescription)")
+                    }
+                }
+                return
+            }
+
+            guard self.activeMode == .packetTunnel else {
+                pluginDebug("Skipping traffic poll for inactive mode=\(self.activeMode.rawValue)")
                 return
             }
 
@@ -1308,17 +1376,37 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     }
 
     private func currentDurationSeconds() -> Int {
-        if proxyOnlyRunner.isRunning {
+        switch activeMode {
+        case .proxyOnly:
             return Int(Date().timeIntervalSince(proxyOnlyRunner.connectedDate ?? Date()))
+        case .selectedApplication:
+            return Int(Date().timeIntervalSince(selectedAppProxyManager?.connectedDate ?? Date()))
+        case .packetTunnel:
+            return Int(Date().timeIntervalSince(packetTunnelManager?.connectedDate ?? Date()))
+        case .none, .stopping:
+            return 0
         }
-        return Int(Date().timeIntervalSince(packetTunnelManager?.connectedDate ?? Date()))
     }
 
     private func currentWireState() -> String {
-        if proxyOnlyRunner.isRunning {
+        if activeMode == .proxyOnly {
             return "CONNECTED"
         }
-        switch packetTunnelManager?.status {
+        if activeMode == .stopping {
+            return "DISCONNECTING"
+        }
+        let status: NEVPNStatus?
+        switch activeMode {
+        case .selectedApplication:
+            status = selectedAppProxyManager?.status
+        case .packetTunnel:
+            status = packetTunnelManager?.status
+        case .none:
+            status = .disconnected
+        case .proxyOnly, .stopping:
+            status = nil
+        }
+        switch status {
         case .connected:
             return "CONNECTED"
         case .connecting, .reasserting:
@@ -1369,7 +1457,14 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         lastProviderDebugLogDate = Date()
         Task {
             do {
-                guard let response = try await self.packetTunnelManager?.sendProviderMessage(data: "xray_debug".data(using: .utf8)!) else {
+                let message = "xray_debug".data(using: .utf8)!
+                let response: Data?
+                if self.selectedAppProxyManager?.isActive == true {
+                    response = try await self.selectedAppProxyManager?.sendProviderMessage(data: message)
+                } else {
+                    response = try await self.packetTunnelManager?.sendProviderMessage(data: message)
+                }
+                guard let response else {
                     if let snapshot = self.packetTunnelManager?.readSharedDebugLog(), !snapshot.isEmpty {
                         pluginLog.info("Provider shared debug snapshot:\n\(snapshot, privacy: .public)")
                     } else {
@@ -1399,6 +1494,8 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             initializeVless(call: call, result: result)
         case "startVless":
             startVless(call: call, result: result)
+        case "inspectProxyApplication":
+            inspectProxyApplication(call: call, result: result)
         case "stopVless":
             stopVless(result: result)
         case "getCoreVersion":
@@ -1419,12 +1516,202 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     /// Calling both cleanup paths is deliberate. It is safe when one mode is not
     /// running and prevents stale system proxy settings from surviving a switch
     /// between proxy-only and VPN mode.
-    private func stopVless(result: FlutterResult) {
+    private func stopVless(result: @escaping FlutterResult) {
         pluginLog.info("stopVless requested")
+        activeMode = .stopping
         proxyOnlyRunner.stop()
+        selectedAppProxyManager?.stop()
         packetTunnelManager?.stop()
-        stopTimer()
-        result(nil)
+        Task { [weak self] in
+            guard let self else {
+                result(FlutterError(
+                    code: "VPN_STOP_ERROR",
+                    message: "VPN plugin was released before macOS confirmed disconnection.",
+                    details: nil
+                ))
+                return
+            }
+            do {
+                try await self.waitForSystemVPNTunnelsToStop()
+                await MainActor.run {
+                    self.activeMode = .none
+                    self.stopTimer(reason: "stopVless-system-confirmed")
+                    result(nil)
+                }
+            } catch {
+                await MainActor.run {
+                    pluginDebug("Timed out waiting for macOS VPN shutdown: \(error.localizedDescription)")
+                    result(FlutterError(
+                        code: "VPN_STOP_TIMEOUT",
+                        message: error.localizedDescription,
+                        details: nil
+                    ))
+                }
+            }
+        }
+    }
+
+    private func waitForSystemVPNTunnelsToStop(
+        timeoutSeconds: TimeInterval = 6
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            let appProxyStatus = selectedAppProxyManager?.status
+            let packetTunnelStatus = packetTunnelManager?.status
+            if isStopped(appProxyStatus) && isStopped(packetTunnelStatus) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        let appProxyStatus = selectedAppProxyManager?.status?.rawValue ?? -1
+        let packetTunnelStatus = packetTunnelManager?.status?.rawValue ?? -1
+        throw NSError(
+            domain: "VPN",
+            code: 2,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "macOS did not disconnect VPN in time "
+                    + "(appProxyStatus=\(appProxyStatus), packetTunnelStatus=\(packetTunnelStatus))."
+            ]
+        )
+    }
+
+    private func isStopped(_ status: NEVPNStatus?) -> Bool {
+        status == nil || status == .disconnected || status == .invalid
+    }
+
+    private func inspectProxyApplication(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let arguments = call.arguments as? [String: Any],
+              let applicationPath = arguments["application_path"] as? String else {
+            result(FlutterError(
+                code: "INVALID_PROXY_APPLICATION",
+                message: "Missing application path.",
+                details: nil
+            ))
+            return
+        }
+
+        let applicationURL = URL(fileURLWithPath: applicationPath)
+        guard applicationURL.pathExtension == "app",
+              FileManager.default.fileExists(atPath: applicationURL.path) else {
+            result(FlutterError(
+                code: "PROXY_APPLICATION_NOT_FOUND",
+                message: "The selected macOS application is not installed.",
+                details: applicationPath
+            ))
+            return
+        }
+
+        guard let appBundle = Bundle(url: applicationURL),
+              let bundleIdentifier = appBundle.bundleIdentifier,
+              !bundleIdentifier.isEmpty else {
+            result(FlutterError(
+                code: "INVALID_PROXY_APPLICATION",
+                message: "The selected application has no bundle identifier.",
+                details: applicationPath
+            ))
+            return
+        }
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(
+            applicationURL as CFURL,
+            SecCSFlags(),
+            &staticCode
+        ) == errSecSuccess,
+              let staticCode else {
+            result(FlutterError(
+                code: "INVALID_PROXY_APPLICATION",
+                message: "The selected application has no readable code signature.",
+                details: applicationPath
+            ))
+            return
+        }
+        guard SecStaticCodeCheckValidity(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSCheckAllArchitectures),
+            nil
+        ) == errSecSuccess else {
+            result(FlutterError(
+                code: "INVALID_PROXY_APPLICATION",
+                message: "The selected application's code signature is invalid.",
+                details: applicationPath
+            ))
+            return
+        }
+        var signingInformation: CFDictionary?
+        guard SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInformation
+        ) == errSecSuccess,
+              let signingInformation = signingInformation as? [CFString: Any],
+              let signingIdentifier = signingInformation[kSecCodeInfoIdentifier] as? String,
+              !signingIdentifier.isEmpty else {
+            result(FlutterError(
+                code: "INVALID_PROXY_APPLICATION",
+                message: "The selected application has no code-signing identifier.",
+                details: applicationPath
+            ))
+            return
+        }
+        let teamIdentifier = signingInformation[kSecCodeInfoTeamIdentifier] as? String
+        var signingIdentifiers = Set([signingIdentifier])
+        let signedBundleExtensions = Set(["app", "appex", "xpc"])
+        let resourceKeys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
+        if let enumerator = FileManager.default.enumerator(
+            at: applicationURL,
+            includingPropertiesForKeys: resourceKeys,
+            options: [.skipsHiddenFiles]
+        ) {
+            for case let nestedURL as URL in enumerator {
+                guard signedBundleExtensions.contains(nestedURL.pathExtension.lowercased()),
+                      nestedURL.standardizedFileURL != applicationURL.standardizedFileURL,
+                      let values = try? nestedURL.resourceValues(forKeys: Set(resourceKeys)),
+                      values.isDirectory == true,
+                      values.isSymbolicLink != true else {
+                    continue
+                }
+                var nestedStaticCode: SecStaticCode?
+                guard SecStaticCodeCreateWithPath(
+                    nestedURL as CFURL,
+                    SecCSFlags(),
+                    &nestedStaticCode
+                ) == errSecSuccess,
+                      let nestedStaticCode,
+                      SecStaticCodeCheckValidity(
+                        nestedStaticCode,
+                        SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate),
+                        nil
+                      ) == errSecSuccess else {
+                    continue
+                }
+                var nestedSigningInformation: CFDictionary?
+                guard SecCodeCopySigningInformation(
+                    nestedStaticCode,
+                    SecCSFlags(rawValue: kSecCSSigningInformation),
+                    &nestedSigningInformation
+                ) == errSecSuccess,
+                      let nestedSigningInformation = nestedSigningInformation as? [CFString: Any],
+                      let nestedIdentifier = nestedSigningInformation[kSecCodeInfoIdentifier] as? String,
+                      !nestedIdentifier.isEmpty,
+                      nestedSigningInformation[kSecCodeInfoTeamIdentifier] as? String == teamIdentifier else {
+                    continue
+                }
+                signingIdentifiers.insert(nestedIdentifier)
+            }
+        }
+        let orderedSigningIdentifiers = [signingIdentifier]
+            + signingIdentifiers.subtracting([signingIdentifier]).sorted()
+        let name = (appBundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (appBundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? applicationURL.deletingPathExtension().lastPathComponent
+        result([
+            "name": name,
+            "bundle_identifier": bundleIdentifier,
+            "signing_identifier": signingIdentifier,
+            "signing_identifiers": orderedSigningIdentifiers
+        ])
     }
 
     private func getConnectedServerDelay(call: FlutterMethodCall, result: @escaping FlutterResult){
@@ -1440,7 +1727,15 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                     result(Int(delay))
                     return
                 }
-                let delay = try await packetTunnelManager?.sendProviderMessage(data: "xray_delay\(url)".data(using: .utf8)!) ?? "-1".data(using: .utf8)!
+                let message = "xray_delay\(url)".data(using: .utf8)!
+                let delay: Data
+                if self.selectedAppProxyManager?.isActive == true {
+                    delay = try await self.selectedAppProxyManager?.sendProviderMessage(data: message)
+                        ?? "-1".data(using: .utf8)!
+                } else {
+                    delay = try await self.packetTunnelManager?.sendProviderMessage(data: message)
+                        ?? "-1".data(using: .utf8)!
+                }
                 pluginLog.info("Connected delay response: \(String(decoding: delay, as: UTF8.self), privacy: .public)")
                 result(Int(String(decoding: delay, as: UTF8.self)))
             }catch{
@@ -1453,7 +1748,13 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     private func getProviderDebugSnapshot(result: @escaping FlutterResult) {
         Task {
             do {
-                guard let response = try await packetTunnelManager?.sendProviderMessage(data: "xray_debug".data(using: .utf8)!) else {
+                let response: Data?
+                if selectedAppProxyManager?.isActive == true {
+                    response = try await selectedAppProxyManager?.sendProviderMessage(data: "xray_debug".data(using: .utf8)!)
+                } else {
+                    response = try await packetTunnelManager?.sendProviderMessage(data: "xray_debug".data(using: .utf8)!)
+                }
+                guard let response else {
                     result(packetTunnelManager?.readSharedDebugLog() ?? "")
                     return
                 }
@@ -1496,11 +1797,18 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         let proxyOnly = arguments["proxy_only"] as? Bool ?? false
         if proxyOnly {
             do {
-                try proxyOnlyRunner.start(configData: configData, configString: config)
-                pluginLog.info("Proxy-only start requested successfully remark=\(remark, privacy: .public)")
+                let applySystemProxy = arguments["apply_system_proxy"] as? Bool ?? true
+                try proxyOnlyRunner.start(
+                    configData: configData,
+                    configString: config,
+                    applySystemProxy: applySystemProxy
+                )
+                activeMode = .proxyOnly
+                pluginLog.info("Proxy-only start requested successfully remark=\(remark, privacy: .public) systemProxy=\(applySystemProxy, privacy: .public)")
                 startTimer()
                 result(nil)
             } catch {
+                activeMode = .none
                 pluginLog.error("Failed to start proxy-only mode: \(error.localizedDescription, privacy: .public)")
                 result(FlutterError(code: "PROXY_ONLY_ERROR",
                                     message: "Failed to start proxy-only mode: \(error.localizedDescription)",
@@ -1509,7 +1817,59 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             return
         }
 
+        let perAppProxy = arguments["per_app_proxy"] as? Bool ?? false
+        if perAppProxy {
+            let selectedApplicationIdentifiers = arguments["allowed_apps"] as? [String] ?? []
+            guard !selectedApplicationIdentifiers.isEmpty else {
+                result(FlutterError(
+                    code: "INVALID_PROXY_APPLICATION",
+                    message: "Selected-application routing requires a bundle identifier.",
+                    details: nil
+                ))
+                return
+            }
+            activeMode = .selectedApplication
+            proxyOnlyRunner.stop()
+            packetTunnelManager?.stop()
+            selectedAppProxyManager?.remark = remark
+            Task {
+                do {
+                    if self.selectedAppProxyManager?.isActive == true {
+                        if self.selectedAppProxyManager?.storedConfigurationMatches(
+                            xrayConfig: configData,
+                            selectedApplicationIdentifiers: selectedApplicationIdentifiers
+                        ) == true {
+                            self.startTimer(reason: "app-proxy-already-active")
+                            result(nil)
+                            return
+                        }
+                        self.selectedAppProxyManager?.stop()
+                        try await self.selectedAppProxyManager?.waitUntilInactive()
+                    }
+                    self.activeMode = .selectedApplication
+                    self.selectedAppProxyManager?.xrayConfig = configData
+                    self.selectedAppProxyManager?.selectedApplicationIdentifiers = selectedApplicationIdentifiers
+                    try await self.selectedAppProxyManager?.saveToPreferences()
+                    try await self.selectedAppProxyManager?.start()
+                    self.startTimer(reason: "app-proxy-start-success", initialState: "CONNECTING")
+                    result(nil)
+                } catch {
+                    self.activeMode = .none
+                    pluginDebug("Failed to start selected-app proxy: \(error.localizedDescription)")
+                    result(FlutterError(
+                        code: "APP_PROXY_ERROR",
+                        message: "Failed to start selected-application routing: \(error.localizedDescription)",
+                        details: nil
+                    ))
+                    self.stopTimer(reason: "app-proxy-start-error")
+                }
+            }
+            return
+        }
+
+        activeMode = .packetTunnel
         proxyOnlyRunner.stop()
+        selectedAppProxyManager?.stop()
         packetTunnelManager?.remark = remark
         let bypassSubnets = arguments["bypass_subnets"] as? [String] ?? []
         pluginDebug("startVless VPN remark=\(remark) configBytes=\(configData.count) currentProxyOnly=\(self.packetTunnelManager?.proxyOnly ?? false) bypassCount=\(self.packetTunnelManager?.bypassSubnets.count ?? 0) hasEventSink=\(eventSink != nil)")
@@ -1532,6 +1892,7 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                     try await self.packetTunnelManager?.waitUntilInactive()
                 }
 
+                self.activeMode = .packetTunnel
                 self.packetTunnelManager?.xrayConfig = configData
                 self.packetTunnelManager?.bypassSubnets = bypassSubnets
                 self.packetTunnelManager?.proxyOnly = false
@@ -1542,6 +1903,7 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 result(nil)
                 return
             } catch {
+                self.activeMode = .none
                 pluginDebug("Failed to start VPN: \(error.localizedDescription)")
                 result(FlutterError(code: "VPN_ERROR",
                                     message: "Failed to start VPN: \(error.localizedDescription)",
@@ -1595,9 +1957,41 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         PluginDebugStore.shared.configure(groupIdentifier: groupIdentifier)
         pluginDebug("initializeVless providerBundleIdentifier=\(providerBundleIdentifier) groupIdentifier=\(groupIdentifier)")
         self.packetTunnelManager = PacketTunnelManager(providerBundleIdentifier: "\(providerBundleIdentifier).XrayTunnel", groupIdentifier: groupIdentifier)
+        self.selectedAppProxyManager = SelectedAppProxyManager(
+            providerBundleIdentifier: "\(providerBundleIdentifier).XrayAppProxy"
+        )
+        self.selectedAppProxyManager?.statusDidChange = { [weak self] status in
+            guard let self else { return }
+            if self.activeMode == .none,
+               status == .connecting || status == .connected || status == .reasserting {
+                self.activeMode = .selectedApplication
+            }
+            guard self.activeMode == .selectedApplication else {
+                pluginDebug("Ignoring SelectedAppProxyManager status raw=\(status?.rawValue ?? -1) activeMode=\(self.activeMode.rawValue)")
+                return
+            }
+            pluginDebug("SelectedAppProxyManager status callback raw=\(status?.rawValue ?? -1) activeMode=\(self.activeMode.rawValue)")
+            switch status {
+            case .connecting, .connected, .reasserting:
+                self.startTimer(reason: "app-proxy-status-\(status?.rawValue ?? -1)")
+            case .disconnected, .invalid:
+                self.activeMode = .none
+                self.stopTimer(reason: "app-proxy-status-\(status?.rawValue ?? -1)")
+            default:
+                break
+            }
+        }
         self.packetTunnelManager?.statusDidChange = { [weak self] status in
             guard let self else { return }
-            pluginDebug("PacketTunnelManager status callback raw=\(status?.rawValue ?? -1) timerRunning=\(self.timer != nil) proxyOnly=\(self.proxyOnlyRunner.isRunning)")
+            if self.activeMode == .none,
+               status == .connecting || status == .connected || status == .reasserting {
+                self.activeMode = .packetTunnel
+            }
+            guard self.activeMode == .packetTunnel else {
+                pluginDebug("Ignoring PacketTunnelManager status raw=\(status?.rawValue ?? -1) activeMode=\(self.activeMode.rawValue)")
+                return
+            }
+            pluginDebug("PacketTunnelManager status callback raw=\(status?.rawValue ?? -1) timerRunning=\(self.timer != nil) proxyOnly=\(self.proxyOnlyRunner.isRunning) activeMode=\(self.activeMode.rawValue)")
             switch status {
             case .connecting, .connected, .reasserting:
                 self.startTimer(reason: "vpn-status-\(status?.rawValue ?? -1)")
@@ -1607,19 +2001,28 @@ public class FlutterVlessPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                         self?.logSystemNetworkSnapshot(reason: "vpn-connected-delayed", force: true)
                         self?.logAppNetworkProbe(reason: "vpn-connected-delayed", force: true)
                     }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                        self?.logProviderDebugSnapshot()
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                        self?.logProviderDebugSnapshot()
+                    }
                 }
             case .disconnected, .invalid:
                 self.didScheduleConnectedDiagnostics = false
-                if !self.proxyOnlyRunner.isRunning {
-                    self.stopTimer(reason: "vpn-status-\(status?.rawValue ?? -1)")
-                }
+                self.activeMode = .none
+                self.stopTimer(reason: "vpn-status-\(status?.rawValue ?? -1)")
             default:
                 break
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            if self.packetTunnelManager?.connectedDate != nil{
-                self.startTimer(reason: "initialize-existing-connected-date")
+            if self.packetTunnelManager?.isActive == true {
+                self.activeMode = .packetTunnel
+                self.startTimer(reason: "initialize-existing-packet-tunnel")
+            } else if self.selectedAppProxyManager?.isActive == true {
+                self.activeMode = .selectedApplication
+                self.startTimer(reason: "initialize-existing-app-proxy")
             }
         }
         result(nil)
@@ -1927,6 +2330,145 @@ final class PacketTunnelManager: ObservableObject {
             return reval
         } catch {
             pluginDebug("Error loading tunnel provider manager: \(error.localizedDescription)")
+            return nil
+        }
+    }
+}
+
+/// Manages the consumer-facing per-application Transparent Proxy profile.
+///
+/// Unlike `NETunnelProviderManager.appRules`, this does not depend on MDM. The
+/// provider receives all candidate flows and only accepts flows whose exact
+/// signed source identifier belongs to the selected app or one of its embedded
+/// signed helpers discovered at selection time.
+final class SelectedAppProxyManager: ObservableObject {
+    let providerBundleIdentifier: String
+    var remark: String = "Xray App Proxy"
+    var xrayConfig = Data()
+    var selectedApplicationIdentifiers: [String] = []
+    var statusDidChange: ((NEVPNStatus?) -> Void)?
+
+    @Published private var manager: NETransparentProxyManager?
+    private var cancellables: Set<AnyCancellable> = []
+
+    var status: NEVPNStatus? { manager?.connection.status }
+    var connectedDate: Date? { manager?.connection.connectedDate }
+    var isActive: Bool {
+        guard let status else { return false }
+        return status == .connecting || status == .connected || status == .reasserting
+    }
+
+    init(providerBundleIdentifier: String) {
+        self.providerBundleIdentifier = providerBundleIdentifier
+        Task(priority: .userInitiated) { await reload() }
+    }
+
+    func reload() async {
+        cancellables.removeAll()
+        manager = await loadManager()
+        statusDidChange?(status)
+        NotificationCenter.default
+            .publisher(for: .NEVPNConfigurationChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                Task {
+                    self.manager = await self.loadManager()
+                    await MainActor.run { self.statusDidChange?(self.status) }
+                }
+            }
+            .store(in: &cancellables)
+        NotificationCenter.default
+            .publisher(for: .NEVPNStatusDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.statusDidChange?(self.status)
+                self.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+    }
+
+    func saveToPreferences() async throws {
+        let manager = self.manager ?? NETransparentProxyManager()
+        self.manager = manager
+        let configuration = NETunnelProviderProtocol()
+        configuration.providerBundleIdentifier = providerBundleIdentifier
+        configuration.serverAddress = "Xray App Proxy"
+        configuration.providerConfiguration = [
+            "xrayConfig": xrayConfig,
+            "selectedApplicationIdentifiers": selectedApplicationIdentifiers
+        ]
+        manager.localizedDescription = remark
+        manager.protocolConfiguration = configuration
+        manager.isEnabled = true
+        pluginDebug("Saving selected-app proxy provider=\(providerBundleIdentifier) selected=\(selectedApplicationIdentifiers.joined(separator: ",")) configBytes=\(xrayConfig.count)")
+        try await manager.saveToPreferences()
+        try await manager.loadFromPreferences()
+    }
+
+    func start() async throws {
+        guard let manager else {
+            throw NSError(domain: "AppProxy", code: 1, userInfo: [NSLocalizedDescriptionKey: "Manager not found"])
+        }
+        if manager.connection.status == .connected || manager.connection.status == .connecting {
+            return
+        }
+        try manager.connection.startVPNTunnel()
+    }
+
+    func stop() {
+        manager?.connection.stopVPNTunnel()
+    }
+
+    func waitUntilInactive(timeoutSeconds: TimeInterval = 5) async throws {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while isActive && Date() < deadline {
+            try await Task.sleep(nanoseconds: 150_000_000)
+        }
+    }
+
+    func storedConfigurationMatches(
+        xrayConfig: Data,
+        selectedApplicationIdentifiers: [String]
+    ) -> Bool {
+        guard let configuration = manager?.protocolConfiguration as? NETunnelProviderProtocol,
+              let stored = configuration.providerConfiguration else {
+            return false
+        }
+        return stored["xrayConfig"] as? Data == xrayConfig
+            && (stored["selectedApplicationIdentifiers"] as? [String] ?? []) == selectedApplicationIdentifiers
+    }
+
+    @discardableResult
+    func sendProviderMessage(data: Data) async throws -> Data? {
+        guard let session = manager?.connection as? NETunnelProviderSession else {
+            return nil
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            do {
+                try session.sendProviderMessage(data) { response in
+                    continuation.resume(returning: response)
+                }
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
+    private func loadManager() async -> NETransparentProxyManager? {
+        do {
+            let managers = try await NETransparentProxyManager.loadAllFromPreferences()
+            guard let manager = managers.first(where: {
+                ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier
+                    == providerBundleIdentifier
+            }) else {
+                return nil
+            }
+            try await manager.loadFromPreferences()
+            return manager
+        } catch {
+            pluginDebug("Error loading selected-app proxy manager: \(error.localizedDescription)")
             return nil
         }
     }

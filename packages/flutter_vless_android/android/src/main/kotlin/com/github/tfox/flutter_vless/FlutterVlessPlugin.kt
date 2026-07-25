@@ -85,6 +85,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
                 config.REMARK = call.argument("remark") ?: ""
                 config.V2RAY_FULL_JSON_CONFIG = call.argument("config") ?: ""
                 config.BLOCKED_APPS = call.argument<ArrayList<String>>("blocked_apps") ?: ArrayList()
+                config.ALLOWED_APPS = call.argument<ArrayList<String>>("allowed_apps") ?: ArrayList()
                 config.BYPASS_SUBNETS = call.argument<ArrayList<String>>("bypass_subnets") ?: ArrayList()
                 config.NOTIFICATION_DISCONNECT_BUTTON_NAME = call.argument("notificationDisconnectButtonName") ?: "Disconnect"
                 

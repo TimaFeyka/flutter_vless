@@ -35,6 +35,9 @@ data class XrayConfig(
     
     /** List of app package names to exclude from VPN. */
     var BLOCKED_APPS: ArrayList<String> = ArrayList(),
+
+    /** If non-empty, only these app package names are routed through VPN. */
+    var ALLOWED_APPS: ArrayList<String> = ArrayList(),
     
     /** The raw Xray configuration JSON string. */
     var V2RAY_FULL_JSON_CONFIG: String = "",
