@@ -32,6 +32,7 @@ pubspec_overrides.yaml
 build/
 **/.build/
 example/**/xcshareddata/swiftpm/Package.resolved
+**/.swiftpm/xcode/xcuserdata/
 
 ### macOS ###
 # General

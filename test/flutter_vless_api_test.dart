@@ -73,8 +73,11 @@ void main() {
       remark: 'API wrapper',
       config: validConfig,
       blockedApps: ['com.blocked.app'],
+      allowedApps: ['com.example.application.signed'],
       bypassSubnets: ['172.16.0.0/12'],
       proxyOnly: false,
+      perAppProxy: true,
+      applySystemProxy: false,
       notificationDisconnectButtonName: 'STOP',
     );
 
@@ -84,8 +87,11 @@ void main() {
       'remark': 'API wrapper',
       'config': validConfig,
       'blocked_apps': ['com.blocked.app'],
+      'allowed_apps': ['com.example.application.signed'],
       'bypass_subnets': ['172.16.0.0/12'],
       'proxy_only': false,
+      'per_app_proxy': true,
+      'apply_system_proxy': false,
       'notificationDisconnectButtonName': 'STOP',
     });
   });

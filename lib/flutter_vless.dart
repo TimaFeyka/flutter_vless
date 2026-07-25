@@ -100,6 +100,13 @@ class FlutterVless {
   /// [blockedApps] is Android-specific and contains package names that should
   /// be excluded from the VPN route.
   ///
+  /// [allowedApps] contains source application identifiers for platform
+  /// implementations that support selected-application routing.
+
+  /// Set [perAppProxy] to `true` on macOS to start the Transparent Proxy
+  /// extension and route only flows whose signed source identifier is present
+  /// in [allowedApps].
+  ///
   /// [bypassSubnets] contains CIDR routes that should be excluded from the
   /// tunnel on platforms that support route exclusions. Use it for local LAN,
   /// DNS, server-host, or app-specific bypass behavior.
@@ -107,14 +114,21 @@ class FlutterVless {
   /// Set [proxyOnly] to `true` when the app should start local Xray proxy
   /// behavior without installing a system VPN or Packet Tunnel route.
   ///
+  /// [applySystemProxy] is used by macOS proxy-only mode. Keep it `true` for
+  /// the legacy whole-system proxy behavior, or set it to `false` to leave the
+  /// system proxy settings unchanged.
+  ///
   /// [notificationDisconnectButtonName] controls the Android foreground
   /// notification disconnect action label.
   Future<void> startVless({
     required String remark,
     required String config,
     List<String>? blockedApps,
+    List<String>? allowedApps,
     List<String>? bypassSubnets,
     bool proxyOnly = false,
+    bool perAppProxy = false,
+    bool applySystemProxy = true,
     String notificationDisconnectButtonName = "DISCONNECT",
   }) async {
     final normalizedConfig = _normalizeConfigString(config);
@@ -123,7 +137,10 @@ class FlutterVless {
       remark: remark,
       config: normalizedConfig,
       blockedApps: blockedApps,
+      allowedApps: allowedApps,
       proxyOnly: proxyOnly,
+      perAppProxy: perAppProxy,
+      applySystemProxy: applySystemProxy,
       bypassSubnets: bypassSubnets,
       notificationDisconnectButtonName: notificationDisconnectButtonName,
     );

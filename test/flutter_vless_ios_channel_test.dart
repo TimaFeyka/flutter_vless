@@ -50,8 +50,11 @@ void main() {
       'remark': 'XHTTP none',
       'config': config,
       'blocked_apps': ['com.example.blocked'],
+      'allowed_apps': null,
       'bypass_subnets': ['10.0.0.0/8'],
       'proxy_only': true,
+      'per_app_proxy': false,
+      'apply_system_proxy': true,
       'notificationDisconnectButtonName': 'STOP',
     });
   });

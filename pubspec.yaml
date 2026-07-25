@@ -50,6 +50,13 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+# Keep this vendored checkout's own analyzer and tests on the local interface.
+# The host application's dependency_overrides do not propagate into this
+# package's separate .dart_tool/package_config.json.
+dependency_overrides:
+  flutter_vless_platform_interface:
+    path: packages/flutter_vless_platform_interface
+
 executables:
   setup_macos_vpn: setup_macos_vpn
 

@@ -9,7 +9,8 @@ let package = Package(
     ],
     products: [
         .library(name: "flutter-vless-macos", targets: ["flutter_vless_macos"]),
-        .library(name: "flutter-vless-macos-tunnel-support", targets: ["flutter_vless_macos_tunnel_support"])
+        .library(name: "flutter-vless-macos-tunnel-support", targets: ["flutter_vless_macos_tunnel_support"]),
+        .library(name: "flutter-vless-macos-app-proxy-support", targets: ["flutter_vless_macos_app_proxy_support"])
     ],
     dependencies: [
         .package(path: "../../../../../../Tun2SocksKit")
@@ -32,6 +33,16 @@ let package = Package(
                 "CXRay",
                 .product(name: "Tun2SocksKit", package: "Tun2SocksKit"),
                 .product(name: "Tun2SocksKitC", package: "Tun2SocksKit")
+            ],
+            linkerSettings: [
+                .linkedLibrary("resolv")
+            ]
+        ),
+        .target(
+            name: "flutter_vless_macos_app_proxy_support",
+            dependencies: [
+                "XRay",
+                "CXRay"
             ],
             linkerSettings: [
                 .linkedLibrary("resolv")

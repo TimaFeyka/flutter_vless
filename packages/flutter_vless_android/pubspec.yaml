@@ -22,6 +22,10 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+dependency_overrides:
+  flutter_vless_platform_interface:
+    path: ../flutter_vless_platform_interface
+
 flutter:
   plugin:
     implements: flutter_vless_platform_interface

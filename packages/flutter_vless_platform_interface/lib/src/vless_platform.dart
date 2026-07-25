@@ -53,8 +53,11 @@ abstract class VlessPlatform extends PlatformInterface {
     required String config,
     required String notificationDisconnectButtonName,
     List<String>? blockedApps,
+    List<String>? allowedApps,
     List<String>? bypassSubnets,
     bool proxyOnly = false,
+    bool perAppProxy = false,
+    bool applySystemProxy = true,
   }) {
     throw UnimplementedError('startVless() has not been implemented.');
   }
