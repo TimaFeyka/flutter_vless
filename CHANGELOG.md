@@ -1,5 +1,6 @@
 ## 1.1.3
 
+* Updated bundled and packaged Xray runtimes to upstream Xray-core `v26.7.28` for Android, iOS, and macOS.
 * Update Android native library packaging instructions
 * Updated bundled and packaged Xray runtimes to upstream Xray-core `v26.6.22` for Android, iOS, and macOS.
 * Fixed macOS VPN mode for VLESS + XHTTP + TLS Packet Tunnel configs by matching the validated Apple route model: `tunnelRemoteAddress = 127.0.0.1`, `198.18.0.1/24` local TUN address, default route gateway `198.18.0.1`, explicit Packet Tunnel DNS, and no DNS host-route exclusions.

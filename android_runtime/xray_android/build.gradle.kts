@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "dev.tfox.fluttervless"
-version = providers.gradleProperty("xrayRuntimeVersion").orElse("26.6.22").get()
+version = providers.gradleProperty("xrayRuntimeVersion").orElse("26.7.28").get()
 
 val runtimeSourceDir = layout.projectDirectory.dir("src/main")
 val requiredRuntimeFiles = listOf(
