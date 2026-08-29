@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 XRAY_MOBILE_DIR="${XRAY_MOBILE_DIR:-$REPO_ROOT/third_party/xray-mobile}"
-XRAY_CORE_VERSION="${XRAY_CORE_VERSION:-v26.6.22}"
+XRAY_CORE_VERSION="${XRAY_CORE_VERSION:-v26.7.28}"
 XRAY_CORE_REF="${XRAY_CORE_REF:-b99c3e56574fb0317608c49dd1dd9af816db7a9e}"
 IOS_VERSION="${IOS_VERSION:-15.0}"
 BUILD_DIR="${BUILD_DIR:-$SCRIPT_DIR/build_xray_ios}"
