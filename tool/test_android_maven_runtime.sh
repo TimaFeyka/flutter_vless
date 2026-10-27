@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-XRAY_RUNTIME_VERSION="${XRAY_RUNTIME_VERSION:-26.6.22}"
+XRAY_RUNTIME_VERSION="${XRAY_RUNTIME_VERSION:-26.9.9-protect1}"
 MAVEN_BASE_URL="https://repo1.maven.org/maven2/dev/tfox/fluttervless/xray-android/$XRAY_RUNTIME_VERSION"
 MAVEN_CENTRAL_RETRY_SECONDS="${MAVEN_CENTRAL_RETRY_SECONDS:-600}"
 TMP_DIR="$(mktemp -d)"

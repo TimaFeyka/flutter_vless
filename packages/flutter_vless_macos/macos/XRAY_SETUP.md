@@ -1,6 +1,6 @@
 # Xray-core Setup for macOS
 
-This plugin uses **Xray-core** `v26.7.28` through the bundled framework for normal plugin flows. If you use an external `xray` executable for manual testing, keep it on `v26.7.28` or newer.
+This plugin uses **Xray-core** `v26.9.9` through the bundled framework for normal plugin flows. If you use an external `xray` executable for manual testing, keep it on `v26.9.9` or newer.
 
 ## Quick Setup
 
@@ -57,7 +57,7 @@ Check if Xray is found:
 ./xray version
 
 # Should output something like:
-# Xray 26.7.28 (Xray, Penetrates Everything.)
+# Xray 26.9.9 (Xray, Penetrates Everything.)
 ```
 
 ## Network Extension Considerations

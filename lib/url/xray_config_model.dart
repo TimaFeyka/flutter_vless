@@ -234,12 +234,27 @@ class XrayOutbound implements XrayJsonModel {
       'tag': tag,
       'protocol': protocol,
       'settings': settings,
-      'streamSettings': streamSettings?.toJson(),
-      'proxySettings': proxySettings,
+      'streamSettings': _streamSettingsForXray26(streamSettings?.toJson(), proxySettings),
       'sendThrough': sendThrough,
       'mux': mux,
     };
   }
+}
+
+/// Xray-core v26.9.9 removed outbound `proxySettings`. A tag there is the
+/// dialer outbound and now belongs in `streamSettings.sockopt.dialerProxy`.
+JsonMap? _streamSettingsForXray26(JsonMap? streamSettings, JsonMap? proxySettings) {
+  final tag = proxySettings?['tag'];
+  if (tag is! String || tag.isEmpty) {
+    return streamSettings;
+  }
+  final stream = Map<String, dynamic>.from(streamSettings ?? const {});
+  final sockopt = Map<String, dynamic>.from(
+    (stream['sockopt'] as Map?)?.cast<String, dynamic>() ?? const {},
+  );
+  sockopt['dialerProxy'] = tag;
+  stream['sockopt'] = sockopt;
+  return stream;
 }
 
 class XrayRouting implements XrayJsonModel {

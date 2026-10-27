@@ -1,5 +1,7 @@
 ## 1.1.3
 
+* Updated bundled and packaged Xray runtimes to upstream Xray-core `v26.9.9` for Android, iOS, and macOS. Android uses Maven `dev.tfox.fluttervless:xray-android:26.9.9-protect1`.
+* Xray-core `v26.9.9` removed outbound `proxySettings`. Generated configs move that tag to `streamSettings.sockopt.dialerProxy`.
 * Updated bundled and packaged Xray runtimes to upstream Xray-core `v26.7.28` for Android, iOS, and macOS.
 * Update Android native library packaging instructions
 * Updated bundled and packaged Xray runtimes to upstream Xray-core `v26.6.22` for Android, iOS, and macOS.
